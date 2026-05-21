@@ -1060,6 +1060,8 @@ def _cart_request(sess, method, url, token, buyer_id=None, **kwargs):
 
         if r.status_code != 428:
             return r
+        if _challenge_round == 0:
+            log("    " + clr_dim("Captcha challenge rnd=" + str(_challenge_round+1) + " cid=" + str(r.headers.get("X-Challenge-ID", ""))[:40]))
 
         challenge_id = r.headers.get("X-Challenge-ID", "")
         difficulty = int(r.headers.get("X-Challenge-Difficulty", "3"))
@@ -1067,13 +1069,27 @@ def _cart_request(sess, method, url, token, buyer_id=None, **kwargs):
         if challenge_id and challenge_id.startswith("recaptcha:"):
             parts = challenge_id.split(":")
             action = parts[1] if len(parts) > 1 else "checkoutComplete"
-            page_url = headers.get("Referer", SITE_BASE + "/checkout")
+            # Use homepage URL matching browser solve behavior.
+            # Browser loads SITE_BASE/ then executes recaptcha there.
+            # Using checkout URL causes server-side page mismatch -> token rejected.
+            page_url = SITE_BASE
 
             recaptcha_token = _solve_recaptcha_enterprise(page_url, action)
             if recaptcha_token:
                 headers["X-Challenge-ID"] = challenge_id
                 headers["X-Hash"] = recaptcha_token
                 headers.pop("X-Nonce", None)
+                r = _request_with_retry(sess, method, url, headers=headers, **kwargs)
+                if r.status_code == 200:
+                    log("    " + clr_ok("Captcha OK! -> HTTP 200"))
+                elif r.status_code == 403:
+                    log("    " + clr_warn("Captcha retry -> HTTP 403 (order exists?)"))
+                elif r.status_code == 428:
+                    log("    " + clr_warn("Captcha retry -> HTTP 428 again (token invalid?)"))
+                    continue  # retry in loop
+                else:
+                    log("    " + clr_warn("Captcha retry -> HTTP " + str(r.status_code)))
+                return r
             else:
                 log("    " + clr_err("reCAPTCHA solve gagal, request akan fail"))
                 break
