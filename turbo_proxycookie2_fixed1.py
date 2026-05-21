@@ -59,7 +59,8 @@ COOKIES_FILE  = "cookies.json"
 TELEGRAM_BOT_TOKEN = "8629439238:AAGGWPZ6SNYoT6_XYquSat8MZZYuuyylvJw"   # Isi token bot Telegram
 TELEGRAM_CHAT_ID   = "1559406078"   # Isi chat ID Telegram
 
-CAPTCHA_API_KEY    = "CAP-5B9E2B8E9D67173DB8A113BA7AA36DADAA4E1769B8EF83AD1FD67FE2510D33E8"   # CAPSolver API Key
+CAPTCHA_API_KEY    = "CAP-5B9E2B8E9D67173DB8A113BA7AA36DADAA4E1769B8EF83AD1FD67FE2510D33E8"   # CAPSolver API Key (fallback)
+CAPTCHA_BROWSER_HEADLESS = False  # False = non-headless, True = headless
 
 
 # Plugo Platform Config (auto-detected from product URL)
@@ -936,6 +937,127 @@ RECAPTCHA_SITE_KEY = "6LfjYfArAAAAAENhLKJJZ4ZXX6hwb7KBbg2B_NGw"
 CAPSOLVER_API_BASE = "https://api.capsolver.com"
 
 
+
+def _detect_chrome_version():
+    """Auto-detect installed Chrome major version number."""
+    import subprocess as sp
+    import platform
+    if platform.system() == "Windows":
+        try:
+            r = sp.run(["reg", "query", r"HKEY_CURRENT_USER\Software\Google\Chrome\BLBeacon", "/v", "version"],
+                       capture_output=True, text=True, timeout=5)
+            for line in r.stdout.split("\n"):
+                if "version" in line.lower() and "REG_SZ" in line:
+                    return int(line.strip().split()[-1].split(".")[0])
+        except Exception:
+            pass
+    for cmd in ["google-chrome --version", "google-chrome-stable --version", "chromium --version"]:
+        try:
+            r = sp.run(cmd.split(), capture_output=True, text=True, timeout=5)
+            if r.returncode == 0 and r.stdout.strip():
+                return int(r.stdout.strip().split()[-1].split(".")[0])
+        except Exception:
+            pass
+    return None
+
+
+def _solve_recaptcha_via_browser(page_url, action="checkoutComplete"):
+    """Solve reCAPTCHA Enterprise using a real browser.
+    Browser tokens are always accepted by Plugo — CAPSolver tokens get 403."""
+    driver = None
+    chrome_ver = _detect_chrome_version()
+    if chrome_ver:
+        log("    " + clr_info("Chrome v" + str(chrome_ver)))
+    try:
+        try:
+            import undetected_chromedriver as uc
+            log("    " + clr_info("Browser solving reCAPTCHA..."))
+            options = uc.ChromeOptions()
+            if CAPTCHA_BROWSER_HEADLESS:
+                options.add_argument("--headless=new")
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
+            options.add_argument("--window-size=1280,900")
+            uc_kwargs = {"options": options, "use_subprocess": True}
+            if chrome_ver:
+                uc_kwargs["version_main"] = chrome_ver
+            driver = uc.Chrome(**uc_kwargs)
+        except ImportError:
+            from selenium import webdriver
+            from selenium.webdriver.chrome.options import Options
+            opts = Options()
+            if CAPTCHA_BROWSER_HEADLESS:
+                opts.add_argument("--headless=new")
+            opts.add_argument("--no-sandbox")
+            opts.add_argument("--disable-dev-shm-usage")
+            opts.add_argument("--window-size=1280,900")
+            driver = webdriver.Chrome(options=opts)
+
+        driver.set_page_load_timeout(25)
+        driver.set_script_timeout(20)
+        if not CAPTCHA_BROWSER_HEADLESS:
+            try:
+                driver.minimize_window()
+            except Exception:
+                driver.set_window_position(-2000, 0)
+
+        log("    " + clr_info("Loading " + SITE_BASE + " ..."))
+        driver.get(SITE_BASE + "/")
+        time.sleep(2)
+
+        has_recaptcha = False
+        try:
+            has_recaptcha = driver.execute_script("return !!(window.grecaptcha && window.grecaptcha.enterprise)")
+        except Exception:
+            pass
+
+        if not has_recaptcha:
+            driver.execute_script("""
+                var s = document.createElement('script');
+                s.src = 'https://www.google.com/recaptcha/enterprise.js?render=' + RECAPTCHA_SITE_KEY;
+                document.head.appendChild(s);
+            """)
+            for _ in range(15):
+                time.sleep(1)
+                try:
+                    if driver.execute_script("return !!(window.grecaptcha && window.grecaptcha.enterprise)"):
+                        has_recaptcha = True
+                        break
+                except Exception:
+                    pass
+
+        if not has_recaptcha:
+            log("    " + clr_err("grecaptcha.enterprise not loaded"))
+            return None
+
+        log("    " + clr_info("Executing recaptcha..."))
+        token = driver.execute_async_script("""
+            var cb = arguments[arguments.length - 1];
+            grecaptcha.enterprise.ready(async function() {
+                try {
+                    var t = await grecaptcha.enterprise.execute(RECAPTCHA_SITE_KEY, {action: ACTION});
+                    cb(t || null);
+                } catch(e) { cb(null); }
+            });
+        """.replace("RECAPTCHA_SITE_KEY", repr(RECAPTCHA_SITE_KEY)).replace("ACTION", repr(action)))
+
+        if token:
+            log("    " + clr_ok("reCAPTCHA solved via browser (" + str(len(token)) + " chars)"))
+            return token
+        else:
+            log("    " + clr_err("Browser recaptcha returned null"))
+            return None
+    except Exception as e:
+        log("    " + clr_err("Browser error: " + str(e)[:150]))
+        return None
+    finally:
+        if driver:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+
+
 def _solve_recaptcha_via_capsolver(page_url, action="checkoutComplete"):
     """Solve reCAPTCHA Enterprise via CAPSolver API (fallback).
     Returns the reCAPTCHA token string, or None on failure.
@@ -1024,9 +1146,11 @@ def _solve_recaptcha_via_capsolver(page_url, action="checkoutComplete"):
 
 
 def _solve_recaptcha_enterprise(page_url, action="checkoutComplete"):
-    """Solve reCAPTCHA Enterprise via CAPSolver.
-    Returns the reCAPTCHA token string, or None on failure.
-    """
+    """Solve reCAPTCHA Enterprise. Browser first (diterima server), CAPSolver fallback."""
+    token = _solve_recaptcha_via_browser(page_url, action)
+    if token:
+        return token
+    log("    " + clr_warn("Browser gagal, fallback ke CAPSolver..."))
     return _solve_recaptcha_via_capsolver(page_url, action)
 
 
@@ -1060,8 +1184,6 @@ def _cart_request(sess, method, url, token, buyer_id=None, **kwargs):
 
         if r.status_code != 428:
             return r
-        if _challenge_round == 0:
-            log("    " + clr_dim("Captcha challenge rnd=" + str(_challenge_round+1) + " cid=" + str(r.headers.get("X-Challenge-ID", ""))[:40]))
 
         challenge_id = r.headers.get("X-Challenge-ID", "")
         difficulty = int(r.headers.get("X-Challenge-Difficulty", "3"))
@@ -1069,10 +1191,7 @@ def _cart_request(sess, method, url, token, buyer_id=None, **kwargs):
         if challenge_id and challenge_id.startswith("recaptcha:"):
             parts = challenge_id.split(":")
             action = parts[1] if len(parts) > 1 else "checkoutComplete"
-            # Use homepage URL matching browser solve behavior.
-            # Browser loads SITE_BASE/ then executes recaptcha there.
-            # Using checkout URL causes server-side page mismatch -> token rejected.
-            page_url = SITE_BASE
+            page_url = SITE_BASE  # browser loads homepage, token must match
 
             recaptcha_token = _solve_recaptcha_enterprise(page_url, action)
             if recaptcha_token:
@@ -1080,18 +1199,11 @@ def _cart_request(sess, method, url, token, buyer_id=None, **kwargs):
                 headers["X-Hash"] = recaptcha_token
                 headers.pop("X-Nonce", None)
                 r = _request_with_retry(sess, method, url, headers=headers, **kwargs)
-                if r.status_code == 200:
-                    log("    " + clr_ok("Captcha OK! -> HTTP 200"))
-                elif r.status_code == 403:
-                    log("    " + clr_warn("Captcha retry -> HTTP 403 (order exists?)"))
-                elif r.status_code == 428:
-                    log("    " + clr_warn("Captcha retry -> HTTP 428 again (token invalid?)"))
-                    continue  # retry in loop
-                else:
-                    log("    " + clr_warn("Captcha retry -> HTTP " + str(r.status_code)))
+                if r.status_code == 428:
+                    continue  # token rejected, solve again
                 return r
             else:
-                log("    " + clr_err("reCAPTCHA solve gagal, request akan fail"))
+                log("    " + clr_err("reCAPTCHA solve gagal"))
                 break
         elif challenge_id:
             nonce, h = _solve_hashcash(challenge_id, difficulty)
