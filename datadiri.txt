@@ -1,0 +1,26 @@
+# Format: nama|email|phone|subdistrik_search|alamat_detail|kecamatan_note|kode_pos_note|size|qty|fallback
+#
+# Kolom 1 : nama
+# Kolom 2 : email
+# Kolom 3 : phone (08xxx / +62xxx)
+# Kolom 4 : kata kunci sub-district dropdown (misal: "Tanah Abang Jakarta Pusat")
+# Kolom 5 : alamat detail (field "Address Details")
+# Kolom 6 : note District/Kecamatan
+# Kolom 7 : note Postal Code/Kode Pos
+# Kolom 8 : size/color variant (bisa list prioritas dipisah koma)
+#            - "M"              -> cari M
+#            - "M,S"            -> cari M dulu, kalau habis pindah S
+#            - "BLACK,PINK"     -> cari BLACK dulu, kalau habis PINK
+#            - "M,S,RANDOM"     -> M, lalu S, lalu random dari yg ready
+#            - kosong           -> ambil yg ready (produk tanpa variant otomatis)
+# Kolom 9 : qty / jumlah beli (default: 1)
+# Kolom 10: fallback mode kalau semua preferensi habis
+#            - "wait" (default)   -> tunggu retry 0.1s sampai variant muncul
+#            - "random"           -> ambil random dari yg ready
+#
+# Contoh:
+Ahmad|external21@deltajohnsons.com|08111222333|Tanah Abang Jakarta Pusat|Jl. Merdeka No.10 RT01/RW02|Tanah Abang|10230|s,m|random
+Ahmad|ahmad@gmail.com|08111222333|Tanah Abang Jakarta Pusat|Jl. Merdeka No.10 RT01/RW02|Tanah Abang|10310|S|
+ahmad aldi|aldiput32@gmail.com|085691430408|Tanah Abang Jakarta Pusat|Rumah susun tanah abang blok 49 lt 3 no 3|Tanah abang|10230|L|random
+# Siti|siti@gmail.com|08222333444|Menteng Jakarta Pusat|Jl. Sudirman No.5|Menteng|10310|BLACK|1|wait
+# Budi|budi@gmail.com|08333444555|Kemang Jakarta Selatan|Jl. Kemang No.3|Kemang|12730||1|random
