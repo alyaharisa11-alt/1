@@ -1718,7 +1718,10 @@ def create_payment_on_order(sess, token, order_id, company, method, pg_type="XEN
                       headers={"Referer": SITE_BASE + "/orders/" + str(order_id)})
     if r.status_code in (200, 201):
         return r.json()
-    raise Exception("Gagal set payment: HTTP " + str(r.status_code) + " " + r.text[:300])
+    err = "[" + pg_type.upper() + "] HTTP " + str(r.status_code) + " " + (r.text[:200] if r.text else "(no body)")
+    log("    " + clr_warn("Payment API: " + err))
+    raise Exception(err)
+
 
 
 def get_order_details(sess, token, order_id, buyer_id=None):
