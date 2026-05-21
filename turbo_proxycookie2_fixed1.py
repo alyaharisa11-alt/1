@@ -280,12 +280,6 @@ def refresh_access_token(sess, refresh_token):
     return None, None
 
 
-def load_cookie_token():
-    """Legacy wrapper: return access token string dari cookies (expired juga tetap return)."""
-    data = load_cookie_tokens()
-    return data.get("at")
-
-
 def get_buyer_id_from_token(token):
     """Extract buyerId dari JWT token payload. Falls back to virtualId for anonymous tokens."""
     try:
@@ -860,36 +854,6 @@ def build_product_url(site_base, product_id, product_name=""):
         return site_base + "/products/" + str(product_id) + "/" + slug
     else:
         return site_base + "/products/" + str(product_id)
-
-
-def display_search_results(results, keyword):
-    """Tampilkan hasil pencarian produk dalam format tabel."""
-    print("")
-    if not results:
-        print("  " + clr_err("Tidak ada produk yang cocok dengan keyword: '" + keyword + "'"))
-        return
-
-    print("  " + clr_ok("Ditemukan " + str(len(results)) + " produk untuk keyword: '" + keyword + "'"))
-    print("")
-    print("  " + C.BOLD + "  No  | ID       | Nama Produk" + C.RESET)
-    print("  " + "-" * 70)
-
-    for i, p in enumerate(results, 1):
-        pid = str(p["id"])
-        name = p.get("name", "?")[:55]
-        total_stock = 0
-        for pv in p.get("productVariations", []):
-            inv = pv.get("inventories", [{}])
-            total_stock += inv[0].get("quantity", 0) if inv else 0
-        stock_color = C.GREEN if total_stock > 0 else C.RED
-        stock_str = stock_color + "stok:" + str(total_stock) + C.RESET
-
-        prices = [pv.get("price", 0) for pv in p.get("productVariations", [])]
-        min_price = min(prices) if prices else 0
-        price_str = "Rp{:,}".format(int(min_price)).replace(",", ".")
-
-        print("  " + C.CYAN + "{:>4}".format(i) + C.RESET + "  | " + pid + " | " + name)
-        print("        |          | " + clr_dim(price_str + "  " + stock_str))
 
 
 # =============================================
