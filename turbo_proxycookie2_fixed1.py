@@ -2381,7 +2381,6 @@ def checkout(run_num, total_run, acc, product_url, payment_keyword=None, shippin
 
             for pg_try in pg_candidates:
                 try:
-                    pass  # trying payment setup
                     payment_result = create_payment_on_order(
                         sess, token, order_id,
                         pm_company, pm_method,
@@ -2391,7 +2390,7 @@ def checkout(run_num, total_run, acc, product_url, payment_keyword=None, shippin
                     log(label + " " + ok_tag() + " Pembayaran berhasil: " + clr_ok(matched_pm["name"]))
                     break
                 except Exception as pe:
-                    pass  # silently try next payment type
+                    log(label + "    " + clr_dim("Payment " + pg_try + ": " + str(pe)[:150]))
 
             if not payment_result:
                 log(label + "    " + clr_warn("Pembayaran gagal di-set otomatis. Pilih manual di web."))
