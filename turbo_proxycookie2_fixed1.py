@@ -1014,7 +1014,7 @@ def _solve_recaptcha_via_browser(page_url, action="checkoutComplete"):
         if not has_recaptcha:
             driver.execute_script("""
                 var s = document.createElement('script');
-                s.src = 'https://www.google.com/recaptcha/enterprise.js?render=' + RECAPTCHA_SITE_KEY;
+                s.src = 'https://www.google.com/recaptcha/enterprise.js?render=' + '""" + RECAPTCHA_SITE_KEY + """';
                 document.head.appendChild(s);
             """)
             for _ in range(15):
@@ -1035,11 +1035,11 @@ def _solve_recaptcha_via_browser(page_url, action="checkoutComplete"):
             var cb = arguments[arguments.length - 1];
             grecaptcha.enterprise.ready(async function() {
                 try {
-                    var t = await grecaptcha.enterprise.execute(RECAPTCHA_SITE_KEY, {action: ACTION});
+                    var t = await grecaptcha.enterprise.execute('""" + RECAPTCHA_SITE_KEY + """', {action: '""" + action + """'});
                     cb(t || null);
                 } catch(e) { cb(null); }
             });
-        """.replace("RECAPTCHA_SITE_KEY", repr(RECAPTCHA_SITE_KEY)).replace("ACTION", repr(action)))
+        """)
 
         if token:
             log("    " + clr_ok("reCAPTCHA solved via browser (" + str(len(token)) + " chars)"))
