@@ -1046,27 +1046,27 @@ def _make_cart_headers(token, buyer_id=None):
 
 
 def _cart_request(sess, method, url, token, buyer_id=None, **kwargs):
-    """Make a cart API request with hashcash + reCAPTCHA Enterprise challenge support."""
+    """Make a cart API request with cascading hashcash + reCAPTCHA challenge support.
+    Loops until all back-to-back 428 challenges are resolved (max 10).
+    """
     if not buyer_id:
         buyer_id = get_buyer_id_from_token(token)
     headers = _make_cart_headers(token, buyer_id)
     if "headers" in kwargs:
         headers.update(kwargs.pop("headers"))
 
-    r = _request_with_retry(sess, method, url, headers=headers, **kwargs)
+    for _challenge_round in range(10):
+        r = _request_with_retry(sess, method, url, headers=headers, **kwargs)
 
-    # Handle challenge (HTTP 428)
-    if r.status_code == 428:
+        if r.status_code != 428:
+            return r
+
         challenge_id = r.headers.get("X-Challenge-ID", "")
         difficulty = int(r.headers.get("X-Challenge-Difficulty", "3"))
 
         if challenge_id and challenge_id.startswith("recaptcha:"):
-
-            # Extract action from challenge_id (e.g., "recaptcha:checkoutComplete:xxx")
             parts = challenge_id.split(":")
             action = parts[1] if len(parts) > 1 else "checkoutComplete"
-
-            # Build page URL from Referer or default
             page_url = headers.get("Referer", SITE_BASE + "/checkout")
 
             recaptcha_token = _solve_recaptcha_enterprise(page_url, action)
@@ -1074,16 +1074,16 @@ def _cart_request(sess, method, url, token, buyer_id=None, **kwargs):
                 headers["X-Challenge-ID"] = challenge_id
                 headers["X-Hash"] = recaptcha_token
                 headers.pop("X-Nonce", None)
-                r = _request_with_retry(sess, method, url, headers=headers, **kwargs)
             else:
                 log("    " + clr_err("reCAPTCHA solve gagal, request akan fail"))
+                break
         elif challenge_id:
-            # Standard hashcash challenge
             nonce, h = _solve_hashcash(challenge_id, difficulty)
             headers["X-Challenge-ID"] = challenge_id
             headers["X-Nonce"] = str(nonce)
             headers["X-Hash"] = h
-            r = _request_with_retry(sess, method, url, headers=headers, **kwargs)
+        else:
+            break
 
     return r
 
@@ -1630,7 +1630,7 @@ def complete_checkout(sess, token, checkout_id, payment_type="PG", payment_info=
 
     buyer_id = get_buyer_id_from_token(token)
 
-    # First attempt via _cart_request (handles hashcash + reCAPTCHA auto)
+    # _cart_request now handles cascading 428 challenges (max 10 rounds)
     r = _cart_request(sess, "POST", url, token, json=body, params=params, timeout=60,
                       headers={"Referer": checkout_referer})
 
@@ -1640,91 +1640,8 @@ def complete_checkout(sess, token, checkout_id, payment_type="PG", payment_info=
             oid = _extract_order_id(data)
             if oid:
                 return oid, data
-            pass  # retry
         except Exception:
-            pass  # retry
-
-    pass  # retry silently
-
-    # --- Attempt 2: fresh request to get challenge + solve reCAPTCHA ---
-    for attempt in range(2):
-        if r.status_code not in (403, 428):
-            break
-
-        challenge_id = r.headers.get("X-Challenge-ID", "") or r.headers.get("x-challenge-id", "")
-
-        # If 403 or no challenge_id, get a fresh 428
-        if r.status_code == 403 or not challenge_id:
-            fresh_headers = _make_cart_headers(token, buyer_id)
-            fresh_headers["Referer"] = checkout_referer
-            r = _request_with_retry(sess, "POST", url, headers=fresh_headers, json=body, params=params, timeout=30)
-            pass  # silent
-            if r.status_code in (200, 201):
-                try:
-                    data = r.json()
-                    oid = _extract_order_id(data)
-                    if oid:
-                        return oid, data
-                except Exception:
-                    pass
-            challenge_id = r.headers.get("X-Challenge-ID", "") or r.headers.get("x-challenge-id", "")
-            if not challenge_id:
-                pass  # no challenge, will retry
-                break
-
-        if challenge_id and challenge_id.startswith("recaptcha:"):
-            parts = challenge_id.split(":")
-            action = parts[1] if len(parts) > 1 else "checkoutComplete"
-            page_url = checkout_referer
-
-            recaptcha_token = _solve_recaptcha_enterprise(page_url, action)
-            if not recaptcha_token:
-                log("    " + clr_err("reCAPTCHA solve gagal"))
-                break
-
-            # Retry with reCAPTCHA token — matching web frontend headers
-            retry_headers = {
-                "Accept": "application/json",
-                "Authorization": "Bearer " + token,
-                "Content-Type": "application/json",
-                "Origin": SITE_BASE,
-                "Referer": checkout_referer,
-                "x-buyer-id": str(buyer_id),
-                "x-challenge-id": challenge_id,
-                "x-hash": recaptcha_token,
-                "x-jwt": "Bearer " + token,
-                "x-sf-version": SF_VERSION,
-            }
-            r = sess.post(url, json=body, params=params, headers=retry_headers, timeout=60)
-            pass  # captcha retry silently
-
-            if r.status_code in (200, 201):
-                try:
-                    data = r.json()
-                    oid = _extract_order_id(data)
-                    if oid:
-                        return oid, data
-                except Exception:
-                    pass
-
-        elif challenge_id:
-            # Hashcash challenge
-            difficulty = int(r.headers.get("X-Challenge-Difficulty", "3"))
-            nonce, h = _solve_hashcash(challenge_id, difficulty)
-            retry_headers = _make_cart_headers(token, buyer_id)
-            retry_headers["Referer"] = checkout_referer
-            retry_headers["X-Challenge-ID"] = challenge_id
-            retry_headers["X-Nonce"] = str(nonce)
-            retry_headers["X-Hash"] = h
-            r = _request_with_retry(sess, "POST", url, headers=retry_headers, json=body, params=params, timeout=30)
-            if r.status_code in (200, 201):
-                try:
-                    data = r.json()
-                    oid = _extract_order_id(data)
-                    if oid:
-                        return oid, data
-                except Exception:
-                    pass
+            pass
 
     # --- Fallback: cek pending orders (order mungkin sudah terbuat tapi response error) ---
     log("    " + clr_info("Cek pending orders..."))
