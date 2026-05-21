@@ -24,7 +24,12 @@ import base64
 from datetime import datetime, timezone, timedelta
 from html.parser import HTMLParser
 
-import requests
+try:
+    from curl_cffi import requests as cffi_requests
+except ImportError:
+    print("ERROR: curl_cffi belum terinstall.")
+    print("Jalankan: pip install curl_cffi")
+    import sys; sys.exit(1)
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ─────────────────────────── CONFIG ───────────────────────────
@@ -474,11 +479,7 @@ def refresh_cookie_header(session, cookies_raw, old_cookie_header):
 
 
 def create_session(cookies_raw):
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": UA,
-        "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
-    })
+    session = cffi_requests.Session(impersonate="chrome136")
     count = 0
     for ck in cookies_raw:
         name = ck.get("name", "")
@@ -497,9 +498,7 @@ def create_session(cookies_raw):
 
 def create_simple_session():
     """Session ringan tanpa cookies untuk scan URL."""
-    s = requests.Session()
-    s.headers.update({"User-Agent": UA})
-    return s
+    return cffi_requests.Session(impersonate="chrome136")
 
 
 def gateway_headers(device_id, request_id, cookie_header, referer=None):
