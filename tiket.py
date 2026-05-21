@@ -32,6 +32,15 @@ except ImportError:
     import sys; sys.exit(1)
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+# ── Windows UTF-8 fix ──────────────────────────────────────────
+if sys.platform == "win32":
+    try:
+        os.system("chcp 65001 > nul")
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 # ─────────────────────────── CONFIG ───────────────────────────
 
 DATA_FILE = "data.txt"
