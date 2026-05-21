@@ -1630,7 +1630,7 @@ def complete_checkout(sess, token, checkout_id, payment_type="PG", payment_info=
 
     buyer_id = get_buyer_id_from_token(token)
 
-    # _cart_request now handles cascading 428 challenges (max 10 rounds)
+    # _cart_request handles cascading 428 captcha challenges (max 10 rounds)
     r = _cart_request(sess, "POST", url, token, json=body, params=params, timeout=60,
                       headers={"Referer": checkout_referer})
 
@@ -1643,12 +1643,24 @@ def complete_checkout(sess, token, checkout_id, payment_type="PG", payment_info=
         except Exception:
             pass
 
-    # --- Fallback: cek pending orders (order mungkin sudah terbuat tapi response error) ---
+    # Order seringkali sudah dibuat server meskipun response captcha/403.
+    # Coba ambil order by checkout ID dulu (paling cepat), baru fallback ke pending.
+    try:
+        order_data = get_order_details(sess, token, checkout_id, buyer_id)
+        if order_data:
+            order_obj = order_data.get("order", order_data) if isinstance(order_data, dict) else order_data
+            oid = order_obj.get("id")
+            if oid:
+                log("    " + clr_ok("Order ditemukan: " + str(oid)))
+                return oid, order_data
+    except Exception:
+        pass
+
+    # Fallback: cek pending orders
     log("    " + clr_info("Cek pending orders..."))
     try:
         pending = get_pending_orders(sess, token, buyer_id)
         if pending:
-            # Ambil order terbaru
             latest = pending[0] if isinstance(pending, list) else pending
             if isinstance(latest, dict):
                 oid = latest.get("id") or latest.get("orderId")
@@ -1702,10 +1714,8 @@ def create_payment_on_order(sess, token, order_id, company, method, pg_type="XEN
         "method": method,
     }
 
-    headers = _make_cart_headers(token, buyer_id)
-    headers["Referer"] = SITE_BASE + "/orders/" + str(order_id)
-
-    r = _request_with_retry(sess, "PUT", url, headers=headers, json=body, timeout=30)
+    r = _cart_request(sess, "PUT", url, token, json=body, timeout=30,
+                      headers={"Referer": SITE_BASE + "/orders/" + str(order_id)})
     if r.status_code in (200, 201):
         return r.json()
     raise Exception("Gagal set payment: HTTP " + str(r.status_code) + " " + r.text[:300])
@@ -2349,7 +2359,7 @@ def checkout(run_num, total_run, acc, product_url, payment_keyword=None, shippin
 
         # Set payment pada order via Plugo API
         payment_result = None
-        if matched_pm and real_order_id != checkout_id:
+        if matched_pm:
             pm_company = matched_pm["company"]
             pm_method = matched_pm["method"]
             pm_pg = matched_pm.get("pgType", "") or ""
@@ -2382,8 +2392,6 @@ def checkout(run_num, total_run, acc, product_url, payment_keyword=None, shippin
 
             if not payment_result:
                 log(label + "    " + clr_warn("Pembayaran gagal di-set otomatis. Pilih manual di web."))
-        elif matched_pm:
-            log(label + "    " + clr_warn("Pilih pembayaran manual di web"))
 
         # Re-load order details setelah payment di-set (untuk dapat total benar)
         try:
