@@ -73,6 +73,78 @@ RETRY_DELAY = 1
 
 SCAN_INTERVAL = 0.1
 
+# ─────────────────────────── TELEGRAM NOTIFIKASI ───────────────────────────
+
+TELEGRAM_FILE = "telegram.json"
+_tg_token = ""
+_tg_chat_id = ""
+
+
+def _load_telegram_cfg():
+    global _tg_token, _tg_chat_id
+    if os.path.exists(TELEGRAM_FILE):
+        try:
+            with open(TELEGRAM_FILE, encoding="utf-8") as f:
+                cfg = json.load(f)
+            _tg_token = cfg.get("token", "").strip()
+            _tg_chat_id = str(cfg.get("chat_id", "")).strip()
+            if _tg_token and _tg_chat_id:
+                print(f"  Telegram: aktif (chat_id: {_tg_chat_id})")
+        except Exception:
+            pass
+
+
+def send_telegram(msg):
+    """Kirim notifikasi ke Telegram. Silent skip jika belum dikonfigurasi."""
+    if not _tg_token or not _tg_chat_id:
+        return
+    try:
+        url = f"https://api.telegram.org/bot{_tg_token}/sendMessage"
+        payload = json.dumps({
+            "chat_id": _tg_chat_id,
+            "text": msg,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        }).encode()
+        req = urllib.request.Request(
+            url, data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        urllib.request.urlopen(req, timeout=10)
+        log("  \033[92m✔ Notif Telegram terkirim\033[0m")
+    except Exception as e:
+        log(f"  Telegram error (skip): {e}")
+
+
+def setup_telegram():
+    """[4] Konfigurasi Telegram notifikasi."""
+    print("\n\033[96m═══ SETUP TELEGRAM NOTIFIKASI ═══\033[0m")
+    print("Butuh: Bot Token dari @BotFather dan Chat ID kamu.")
+    print("Cara dapat Chat ID: kirim pesan ke bot, lalu buka")
+    print("  https://api.telegram.org/bot<TOKEN>/getUpdates\n")
+    token = input("Bot Token (ENTER=nonaktifkan): ").strip()
+    if not token:
+        if os.path.exists(TELEGRAM_FILE):
+            os.remove(TELEGRAM_FILE)
+        global _tg_token, _tg_chat_id
+        _tg_token = ""
+        _tg_chat_id = ""
+        print("\033[93mTelegram notifikasi dinonaktifkan.\033[0m\n")
+        return
+    chat_id = input("Chat ID: ").strip()
+    if not chat_id:
+        print("\033[91mChat ID kosong, batal.\033[0m\n")
+        return
+    # Test kirim pesan
+    _tg_token = token
+    _tg_chat_id = chat_id
+    print("Mengirim pesan test...")
+    send_telegram("✅ <b>Bot tiket.com terhubung!</b>\nNotifikasi order berhasil akan dikirim ke sini.")
+    with open(TELEGRAM_FILE, "w", encoding="utf-8") as f:
+        json.dump({"token": token, "chat_id": chat_id}, f, indent=2)
+    print(f"\033[92mKonfigurasi tersimpan di {TELEGRAM_FILE}\033[0m\n")
+
+
 # ─────────────────────────── HELPERS ───────────────────────────
 
 def log(msg):
@@ -2050,6 +2122,15 @@ def run_auto_order():
         print(f"║  Waktu proses : {total_time:.2f} detik{' ' * max(0, 42 - len(f'{total_time:.2f} detik'))}║")
         print("╚══════════════════════════════════════════════════════════════════╝\033[0m")
         print()
+        send_telegram(
+            f"✅ <b>PESANAN BERHASIL!</b>\n\n"
+            f"👤 {nama} ({email})\n"
+            f"🎫 {pkg_display_name} x{qty}\n"
+            f"💰 {calc_total}\n"
+            f"🆔 Order ID: <code>{core_order_id}</code>\n\n"
+            f"🔗 <a href=\"{pay_url}\">URL Payment</a>\n"
+            f"⏱ Proses: {total_time:.2f}s"
+        )
         return
 
     # ── PAYMENT ──
@@ -2143,6 +2224,23 @@ def run_auto_order():
     print(f"║  Waktu proses : {total_time:.2f} detik{' ' * max(0, 42 - len(f'{total_time:.2f} detik'))}║")
     print("╚══════════════════════════════════════════════════════════════════╝\033[0m")
     print()
+    tg_lines = [
+        "✅ <b>PESANAN BERHASIL!</b>\n",
+        f"👤 {nama} ({email})",
+        f"🎫 {pkg_display_name} x{qty}",
+        f"💳 Metode: {method_display}",
+    ]
+    if va_number and not is_mybca_only:
+        tg_lines.append(f"🏦 VA BCA: <code>{va_number}</code>")
+    tg_lines.append(f"💰 Total: {total_amount}")
+    tg_lines.append(f"🆔 Order ID: <code>{core_order_id}</code>")
+    if expired_str:
+        tg_lines.append(f"⏰ Batas Bayar: {expired_str}")
+    tg_lines.append(f"\n🔗 <a href=\"{pay_url}\">URL Payment</a>")
+    if redirect_url:
+        tg_lines.append(f"📱 <a href=\"{redirect_url}\">Link myBCA</a>")
+    tg_lines.append(f"\n⏱ Proses: {total_time:.2f}s")
+    send_telegram("\n".join(tg_lines))
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -2150,6 +2248,7 @@ def run_auto_order():
 # ═══════════════════════════════════════════════════════════════
 
 def main():
+    _load_telegram_cfg()
     print()
     print("\033[96m" + "╔" + "═" * 58 + "╗")
     print("║" + " " * 58 + "║")
@@ -2166,10 +2265,11 @@ def main():
         print("  \033[92m[1]\033[0m Auto Order Tiket")
         print("  \033[92m[2]\033[0m Cek Kuota Tiket Lengkap")
         print("  \033[92m[3]\033[0m Scan Hidden Link URL (Penjualan)")
+        print("  \033[96m[4]\033[0m Setup Telegram Notifikasi")
         print("  \033[91m[0]\033[0m Keluar")
         print("\033[97m" + "=" * 50 + "\033[0m")
 
-        choice = input("\nPilih fitur (0-3): ").strip()
+        choice = input("\nPilih fitur (0-4): ").strip()
 
         if choice == "1":
             run_auto_order()
@@ -2177,6 +2277,8 @@ def main():
             run_kuota_checker()
         elif choice == "3":
             run_url_scanner()
+        elif choice == "4":
+            setup_telegram()
         elif choice == "0":
             print("\nBye!\n")
             break
