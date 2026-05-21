@@ -16,6 +16,7 @@ import re
 import os
 import sys
 import uuid
+import threading
 import time
 import random
 import string
@@ -67,7 +68,7 @@ SEC_CH_UA = f'"Chromium";v="{CHROME_VER}", "Not.A/Brand";v="99", "Google Chrome"
 
 MAX_CAPTCHA_RETRIES = 5
 MAX_ORDER_RETRIES = 4
-CAPTCHA_POLL_INTERVAL = 2
+CAPTCHA_POLL_INTERVAL = 1
 CAPTCHA_POLL_TIMEOUT = 120
 RETRY_DELAY = 1
 
@@ -244,7 +245,7 @@ def solve_recaptcha_capsolver(page_url, sitekey=None, action=None, attempt=1):
         return None
 
     log(f"       Task ID: {task_id[:16]}...")
-    time.sleep(2)
+    time.sleep(1)
 
     start = time.time()
     while time.time() - start < CAPTCHA_POLL_TIMEOUT:
@@ -889,7 +890,7 @@ def _get_order_status(session, order_id_mongo, device_id, cookie_header, order_p
                 "status": status,
             }
         if attempt < max_poll:
-            time.sleep(1)
+            time.sleep(0.5)
 
     log("ERROR: coreOrderId/coreOrderHash kosong setelah polling!")
     return None
@@ -936,16 +937,28 @@ def create_order_http(session, order_payload, gateway_h, product_id, device_id,
 
         if code == "SUCCESS":
             resp_data = resp.get("data") or {}
-            oid = resp_data.get("id") or resp_data.get("orderId") or resp_data.get("order_id") or resp_data.get("_id")
-            if not oid and isinstance(resp_data, str):
-                oid = resp_data
-            if not oid and isinstance(resp_data, dict):
-                for k, v in resp_data.items():
-                    if isinstance(v, str) and len(v) >= 20:
-                        oid = v
-                        break
+            def _find_oid(obj):
+                if isinstance(obj, str) and len(obj) >= 16:
+                    return obj
+                if isinstance(obj, dict):
+                    for field in ("id", "orderId", "order_id", "_id", "orderMongoId", "mongoId"):
+                        v = obj.get(field)
+                        if v and isinstance(v, str) and len(v) >= 16:
+                            return v
+                    for k, v in obj.items():
+                        r = _find_oid(v)
+                        if r:
+                            return r
+                if isinstance(obj, list):
+                    for item in obj:
+                        r = _find_oid(item)
+                        if r:
+                            return r
+                return None
+
+            oid = _find_oid(resp_data)
             if not oid:
-                log(f"\033[91m       ✘ Order ID tidak ditemukan dalam response\033[0m")
+                log(f"\033[91m       ✘ Order ID tidak ditemukan. Raw data: {str(resp_data)[:300]}\033[0m")
                 return None
             log(f"\033[92m       ✔ Order berhasil! ID: {oid} ({time.time() - t0:.1f}s)\033[0m")
             return _get_order_status(session, oid, device_id, cookie_header, order_page_url)
@@ -971,35 +984,29 @@ def process_payment_http(session, core_order_id, core_order_hash, order_request_
                          device_id, cookie_header):
     pay_ref = f"{BASE}/id-id/payment?order_id={core_order_id}&order_hash={core_order_hash}"
 
-    log("       Verifikasi payment...")
-    check_h = payment_headers(device_id, gen_id(), cookie_header, pay_ref)
-    check_resp = http_get_json(
-        session,
-        f"{GATEWAY}/tix-payment-core/payment/check-version",
-        check_h,
-        params={"referenceId": core_order_id, "orderHash": core_order_hash},
-        label="CHECK-VERSION",
-    )
-    log("       Mengirim log...")
-    pl_h = payment_headers(device_id, gen_id(), cookie_header, pay_ref)
-    pl_h["content-type"] = "application/json"
-    pl_payload = [{
-        "msg": "",
-        "correlationId": order_request_id,
-        "utmParams": {
-            "referrer": "none", "utmCampaign": "none", "utmContent": "none",
-            "utmExternal": "organic", "utmId": "none", "utmLogic": "none",
-            "utmMedium": "none", "utmPage": "none", "utmSection": "none",
-            "utmSource": "none", "utmTerm": "none",
-            "utmAttributedAt": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
-        },
-        "constructedUtm": {
-            "campaign": "none", "content": "none", "external": "organic",
-            "id": "none", "logic": "none", "medium": "none", "page": "none",
-            "section": "none", "source": "none", "term": "none",
-        },
-    }]
-    http_post_json(session, f"{GATEWAY}/tix-payment-core/post-log", pl_payload, pl_h, label="POST-LOG")
+    # check-version + post-log: fire-and-forget (tidak perlu nunggu)
+    def _bg_pre_payment():
+        try:
+            ch = payment_headers(device_id, gen_id(), cookie_header, pay_ref)
+            http_get_json(session, f"{GATEWAY}/tix-payment-core/payment/check-version",
+                ch, params={"referenceId": core_order_id, "orderHash": core_order_hash},
+                label="CHECK-VERSION", timeout=8)
+            pl_h2 = payment_headers(device_id, gen_id(), cookie_header, pay_ref)
+            pl_h2["content-type"] = "application/json"
+            pl2 = [{"msg": "", "correlationId": order_request_id,
+                "utmParams": {"referrer": "none", "utmCampaign": "none", "utmContent": "none",
+                    "utmExternal": "organic", "utmId": "none", "utmLogic": "none",
+                    "utmMedium": "none", "utmPage": "none", "utmSection": "none",
+                    "utmSource": "none", "utmTerm": "none",
+                    "utmAttributedAt": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")},
+                "constructedUtm": {"campaign": "none", "content": "none", "external": "organic",
+                    "id": "none", "logic": "none", "medium": "none", "page": "none",
+                    "section": "none", "source": "none", "term": "none"}}]
+            http_post_json(session, f"{GATEWAY}/tix-payment-core/post-log", pl2, pl_h2,
+                label="POST-LOG", timeout=8)
+        except Exception:
+            pass
+    threading.Thread(target=_bg_pre_payment, daemon=True).start()
 
     log("       Landing payment...")
     land_h = payment_headers(device_id, gen_id(), cookie_header, pay_ref)
@@ -1015,7 +1022,6 @@ def process_payment_http(session, core_order_id, core_order_hash, order_request_
         log(f"\033[91m       ✘ Payment landing gagal\033[0m")
         return None
     log("       Landing OK")
-    time.sleep(0.5)
 
     pay_body = {"orderHash": core_order_hash, "referenceId": int(core_order_id)}
     grand_total_str = "?"
@@ -1047,7 +1053,6 @@ def process_payment_http(session, core_order_id, core_order_hash, order_request_
     else:
         det_msg = (det_resp or {}).get("message", det_code)
         log(f"       \033[93m⚠ {det_msg}\033[0m")
-    time.sleep(0.5)
 
     log("       Konfirmasi pembayaran VA BCA...")
     conf_ref = f"{BASE}/id-id/payment/va_bca/confirm?order_id={core_order_id}&order_hash={core_order_hash}"
